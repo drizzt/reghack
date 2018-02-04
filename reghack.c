@@ -1,7 +1,7 @@
 /*
  * reghack - Utility to binary-patch the embedded mac80211 regulatory rules.
  *
- *   Copyright (C) 2012-2013 Jo-Philipp Wich <xm@subsignal.org>
+ *   Copyright (C) 2012-2014 Jo-Philipp Wich <xm@subsignal.org>
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -23,12 +23,18 @@
 #include <fcntl.h>
 #include <string.h>
 #include <byteswap.h>
+#include <limits.h>
 #include <arpa/inet.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
 
 
 static int need_byteswap = 0;
+
+enum nl80211_dfs_regions {
+	NL80211_DFS_UNSET = 0,
+	NL80211_DFS_FCC = 1
+};
 
 struct ieee80211_freq_range {
     uint32_t start_freq_khz;
@@ -45,12 +51,13 @@ struct ieee80211_reg_rule {
     struct ieee80211_freq_range freq_range;
     struct ieee80211_power_rule power_rule;
     uint32_t flags;
+    uint32_t dfs_cac_ms;
 };
 
 struct ieee80211_regdomain {
     uint32_t n_reg_rules;
     char alpha2[2];
-    uint8_t dfs_region;
+    enum nl80211_dfs_regions dfs_region;
     struct ieee80211_reg_rule reg_rules[1];
 };
 
@@ -69,6 +76,17 @@ struct ieee80211_regdomain {
     .power_rule.max_antenna_gain = DBI_TO_MBI(gain),\
     .power_rule.max_eirp = DBM_TO_MBM(eirp),    \
     .flags = reg_flags,             \
+    .dfs_cac_ms = 0, \
+}
+
+#define REG_MATCH(code, num, dfs, rule) \
+{ \
+	.alpha2 = code, \
+	.dfs_region = dfs, \
+	.n_reg_rules = num, \
+	.reg_rules = { \
+		rule \
+	} \
 }
 
 
@@ -81,70 +99,55 @@ static const struct search_regdomain search_regdomains[] = {
 	/* cfg80211.ko matches */
 	{
 		.desc = "core world5 regdomain in cfg80211/reg.o",
-		.reg  = {
-			.alpha2 = "00",
-			.reg_rules = {
-				REG_RULE(2402, 2472, 40, 6, 20, 0)
-			},
-			.n_reg_rules = 5
-		}
+		.reg  = REG_MATCH("00", 5, NL80211_DFS_UNSET, REG_RULE(2402, 2472, 40, 6, 20, 0))
 	}, {
 		.desc = "core world6 regdomain in cfg80211/reg.o",
-		.reg  = {
-			.alpha2 = "00",
-			.reg_rules = {
-				REG_RULE(2402, 2472, 40, 6, 20, 0)
-			},
-			.n_reg_rules = 6
-		}
+		.reg  = REG_MATCH("00", 6, NL80211_DFS_UNSET, REG_RULE(2402, 2472, 40, 6, 20, 0))
+	}, {
+		.desc = "core world7 regdomain in cfg80211/reg.o",
+		.reg  = REG_MATCH("00", 7, NL80211_DFS_UNSET, REG_RULE(2402, 2472, 40, 6, 20, 0))
+	}, {
+		.desc = "core world8 regdomain in cfg80211/reg.o",
+		.reg  = REG_MATCH("00", 8, NL80211_DFS_UNSET, REG_RULE(2402, 2472, 40, 6, 20, 0))
 	}, {
 		.desc = "embedded 00 regdomain in cfg80211/regdb.o",
-		.reg  = {
-			.alpha2 = "00",
-			.reg_rules = {
-				REG_RULE(2402, 2472, 40, 3, 20, 0)
-			},
-			.n_reg_rules = 5
-		}
+		.reg  = REG_MATCH("00", 5, NL80211_DFS_UNSET, REG_RULE(2402, 2472, 40, 3, 20, 0))
+	}, {
+		.desc = "embedded 00 regdomain in cfg80211/regdb.o",
+		.reg  = REG_MATCH("00", 6, NL80211_DFS_UNSET, REG_RULE(2402, 2472, 40, 3, 20, 0))
+	}, {
+		.desc = "embedded 00 regdomain in cfg80211/regdb.o",
+		.reg  = REG_MATCH("00", 8, NL80211_DFS_UNSET, REG_RULE(2402, 2472, 40, 0, 20, 0))
 	}, {
 		.desc = "embedded US regdomain in cfg80211/regdb.o",
-		.reg  = {
-			.alpha2 = "US",
-			.reg_rules = {
-				REG_RULE(2402, 2472, 40, 3, 27, 0)
-			},
-			.n_reg_rules = 6
-		}
+		.reg  = REG_MATCH("US", 6, NL80211_DFS_UNSET, REG_RULE(2402, 2472, 40, 3, 27, 0))
+	}, {
+		.desc = "embedded US regdomain in cfg80211/regdb.o",
+		.reg  = REG_MATCH("US", 7, NL80211_DFS_UNSET, REG_RULE(2402, 2472, 40, 3, 27, 0))
+	}, {
+		.desc = "embedded US regdomain in cfg80211/regdb.o",
+		.reg  = REG_MATCH("US", 7, NL80211_DFS_FCC, REG_RULE(2402, 2472, 40, 3, 27, 0))
+	},
+
+	/* regdb.txt matches (new) */
+	{
+		.desc = "embedded 00 regdomain in cfg80211/regdb.o",
+		.reg  = REG_MATCH("00", 6, NL80211_DFS_UNSET, REG_RULE(2402, 2472, 40, 0, 20, 0))
+	}, {
+		.desc = "embedded US regdomain in cfg80211/regdb.o",
+		.reg  = REG_MATCH("US", 5, NL80211_DFS_FCC, REG_RULE(2402, 2472, 40, 0, 30, 0))
 	},
 
 	/* ath.ko matches */
 	{
 		.desc = "ath world regdomain with 3 rules in ath/regd.o",
-		.reg  = {
-			.alpha2 = "99",
-			.reg_rules = {
-				REG_RULE(2402, 2472, 40, 0, 20, 0)
-			},
-			.n_reg_rules = 3
-		}
+		.reg  = REG_MATCH("99", 3, NL80211_DFS_UNSET, REG_RULE(2402, 2472, 40, 0, 20, 0))
 	}, {
 		.desc = "ath world regdomain with 4 rules in ath/regd.o",
-		.reg  = {
-			.alpha2 = "99",
-			.reg_rules = {
-				REG_RULE(2402, 2472, 40, 0, 20, 0)
-			},
-			.n_reg_rules = 4
-		}
+		.reg  = REG_MATCH("99", 4, NL80211_DFS_UNSET, REG_RULE(2402, 2472, 40, 0, 20, 0))
 	}, {
 		.desc = "ath world regdomain with 5 rules in ath/regd.o",
-		.reg  = {
-			.alpha2 = "99",
-			.reg_rules = {
-				REG_RULE(2402, 2472, 40, 0, 20, 0)
-			},
-			.n_reg_rules = 5
-		}
+		.reg  = REG_MATCH("99", 5, NL80211_DFS_UNSET, REG_RULE(2402, 2472, 40, 0, 20, 0))
 	}
 };
 
@@ -155,6 +158,7 @@ struct search_insn {
 	const uint32_t search;
 	const uint32_t replace;
 	const uint32_t mask;
+	int step;
 };
 
 static const struct search_insn search_insns[] = {
@@ -164,15 +168,49 @@ static const struct search_insn search_insns[] = {
 		.machine = 0x0008,     /* MIPS */
 		.search  = 0x2400eb74, /* addiu rX, rY, -5260 */
 		.replace = 0x24000000, /* addiu rX, rY, 0	*/
-		.mask    = 0xfc00ffff
+		.mask    = 0xfc00ffff,
+		.step    = 4
 	},
 	{
 		.desc    = "ath_is_radar_freq() PPC opcode in ath/regd.o",
 		.machine = 0x0014,     /* PPC */
 		.search  = 0x3800eb74, /* addi rX, rY, -5260 */
 		.replace = 0x38000000, /* addi rX, rY, 0 */
-		.mask    = 0xfc00ffff
+		.mask    = 0xfc00ffff,
+		.step    = 4
 	},
+	{
+		.desc    = "ath_is_radar_freq() x86 opcode in ath/regd.o (1/2)",
+		.machine = 0x0003,	/* x86 */
+		.search  = 0x0000148c,	/* 5260 */
+		.replace = 0x00000000,  /* 0 */
+		.mask    = 0x0000ffff,
+		.step    = 1
+	},
+	{
+		.desc    = "ath_is_radar_freq() x86 opcode in ath/regd.o (2/2)",
+		.machine = 0x0003,	/* x86 */
+		.search  = 0xffffeb74,	/* -5260 */
+		.replace = 0x00000000,  /* 0 */
+		.mask    = 0xffffffff,
+		.step    = 1
+	},
+	{
+		.desc    = "ath_is_radar_freq() x86-64 opcode in ath/regd.o (1/2)",
+		.machine = 0x003e,	/* x86-64 */
+		.search  = 0x0000148c,	/* 5260 */
+		.replace = 0x00000000,  /* 0 */
+		.mask    = 0x0000ffff,
+		.step    = 1
+	},
+	{
+		.desc    = "ath_is_radar_freq() x86-64 opcode in ath/regd.o (2/2)",
+		.machine = 0x003e,	/* x86-64 */
+		.search  = 0xffffeb74,	/* -5260 */
+		.replace = 0x00000000,  /* 0 */
+		.mask    = 0xffffffff,
+		.step    = 1
+	}
 };
 
 
@@ -206,12 +244,13 @@ static int patch_regdomain(struct ieee80211_regdomain *pos,
                            const struct ieee80211_regdomain *comp)
 {
 	struct ieee80211_reg_rule r2 = REG_RULE(2400, 2483, 40, 0, 30, 0);
-	struct ieee80211_reg_rule r5 = REG_RULE(5140, 5860, 40, 0, 30, 0);
+	struct ieee80211_reg_rule r5 = REG_RULE(5140, 5860, 160, 0, 30, 0);
 	struct ieee80211_regdomain pattern = *comp;
 
 	if (need_byteswap)
 	{
 		bswap_rule(&pattern.reg_rules[0]);
+		pattern.dfs_region = bswap_32(pattern.dfs_region);
 		pattern.n_reg_rules = bswap_32(pattern.n_reg_rules);
 	}
 
@@ -220,6 +259,7 @@ static int patch_regdomain(struct ieee80211_regdomain *pos,
 		pos->reg_rules[0] = r2;
 		pos->reg_rules[1] = r5;
 		pos->n_reg_rules = 2;
+		pos->dfs_region = 0;
 
 		if (need_byteswap)
 		{
@@ -340,15 +380,15 @@ int main(int argc, char **argv)
 	check_endianess(map);
 	ath_ko_machine = check_ath_ko(map, argv[1]);
 
-	for (i = 0; i < (sz - sizeof(search_regdomains[0].reg)); i += sizeof(uint32_t))
+	if (ath_ko_machine)
 	{
-		if (ath_ko_machine)
+		for (j = 0; j < sizeof(search_insns)/sizeof(search_insns[0]); j++)
 		{
-			for (j = 0; j < sizeof(search_insns)/sizeof(search_insns[0]); j++)
-			{
-				if (search_insns[j].machine != ath_ko_machine)
-					continue;
+			if (search_insns[j].machine != ath_ko_machine)
+				continue;
 
+			for (i = 0; i < (sz - sizeof(search_regdomains[0].reg)); i += search_insns[j].step)
+			{
 				if (!patch_insn(map + i, &search_insns[j]))
 				{
 					printf("Patching @ 0x%08x: %s\n", i, search_insns[j].desc);
@@ -356,7 +396,10 @@ int main(int argc, char **argv)
 				}
 			}
 		}
+	}
 
+	for (i = 0; i < (sz - sizeof(search_regdomains[0].reg)); i += sizeof(uint32_t))
+	{
 		for (j = 0; j < (sizeof(search_regdomains)/sizeof(search_regdomains[0])); j++)
 		{
 			if (!patch_regdomain(map + i, &search_regdomains[j].reg))
